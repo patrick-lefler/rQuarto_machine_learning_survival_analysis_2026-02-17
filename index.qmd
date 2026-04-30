@@ -1,0 +1,530 @@
+---
+title: "Machine Learning and Survival Analysis"
+subtitle: "Predicting customer churn using complex statistical modeling"
+abstract: "Credit card attrition is rarely a sudden decision — it is a behavioral drift detectable months before an account formally closes. Using over 10,000 anonymized customer records, this analysis builds a three-stage intelligence framework for a consumer credit card division. Logistic regression isolates the specific behavioral and demographic factors that amplify departure risk, expressed as interpretable Risk Multipliers. A Random Forest classifier then scores every active account on an individualized churn probability, producing a ranked tactical outreach list for the retention team. Finally, Kaplan-Meier survival analysis maps the customer lifecycle to pinpoint the tenure milestones where attrition risk concentrates — identifying a pronounced drop-off at the 36-month mark consistent with expiring promotional incentives. Across all three methods, transaction velocity emerges as the dominant signal: when a customer stops using their card, they are signaling intent to leave long before they make the call."
+author: "Patrick Lefler"
+date: February 17, 2026
+format:
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: false
+    fig-height: 6
+    fig-width: 10
+    lightbox: true
+    number-sections: false
+    self-contained: true
+    self-contained-math: true
+    smooth-scroll: true
+    theme: sandstone
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    toc-title: "Contents"
+brand: _brand.yml
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+### Setup
+```{r}
+#| label: setup
+#| include: true
+
+# Load required libraries for the analysis
+library(formattable) # Allow for table styling - currency
+library(kableExtra)  # Professional table formatting
+library(patchwork)  # Combine multiple plots in rows & columns
+library(plotly)      # Interactive executive charts
+library(readxl)      # Ingesting Excel workbooks 
+library(sessioninfo) # Detailed session information
+library(survival)    # Tenure and 'time-to-event' analysis
+library(survminer)   # Visualizing survival curves
+library(tidyverse)   # Data wrangling and visualization
+library(tidymodels)  # Unified modeling framework
+library(vip)         # Feature importance plots
+
+# Load the historic bank customer data 
+raw_data <- read_excel("data/bank_attrition_data.xlsm", sheet = "bankChurners")
+
+# Preparing data: ensuring all chr columns are a factor and predictors are cleaned
+attritionData <- raw_data %>%
+  mutate(
+    churn = factor(attrition.flag, levels = c("Existing Customer", "Attrited Customer")),
+    across(where(is.character), as.factor)
+  ) %>%
+  mutate(gender = ifelse(gender == "F", "Female", "Male")) %>%
+  mutate(gender = factor(gender, levels = c("Female", "Male"))) %>%
+  mutate(income.bracket = case_when(
+      income.bracket == "Unknown" ~ "Unknown",
+      income.bracket == "Less than $40K" ~ "<$40k",
+      income.bracket == "$40K - $60K" ~ "$40k-$60k",
+      income.bracket == "$60K - $80K" ~ "$60k-$80k",
+      income.bracket == "$80K - $120K" ~ "$80k-$120k",
+      income.bracket == "$120K +" ~ ">$120k")) %>%
+  
+  mutate(income.bracket = factor(income.bracket, levels = c("<$40k", "$40k-$60k", 
+                                                              "$60k-$80k", "$80k-$120k",
+                                                              ">$120k", "Unknown"))) %>%
+  
+  mutate(card.category = factor(card.category, levels = c("Blue", "Silver",
+                                                          "Gold", "Platinum"))) %>%
+  
+  mutate(education.level = factor(education.level, levels = c("Uneducated", 
+                                    "High School", "College", "Graduate", 
+                                    "Post-Graduate","Doctorate", "Unknown"))) %>%
+  
+  mutate(marital.status = factor(marital.status, levels = c("Single", "Married",
+                                                            "Divorced", "Unknown"))) %>%
+
+  mutate(age.bracket = ifelse(customer.age < 30, "<30", 
+                                  ifelse (customer.age < 40, "30-39",
+                                  ifelse (customer.age < 50, "40-49",
+                                  ifelse (customer.age < 60, "50-59", "60+")
+                                  )
+                                  )
+                                  )) %>%
+  
+  mutate(age.bracket = factor(age.bracket, levels = c("<30", "30-39", "40-49", 
+                                                      "50-59", "60+")))
+                                                            
+                                          
+                                   
+                  
+```
+
+### Introduction
+
+This project provides a comprehensive data science framework for identifying, analyzing, and predicting customer attrition within a consumer credit card division. By leveraging a historic data set of over 10,000 records, this analysis moves beyond descriptive reporting to deliver actionable risk intelligence and tactical insights.
+
+The underlying data is sourced from the Kaggle Credit Card Customers data set that can be accessed [here](https://www.kaggle.com/datasets/sakshigoyal7/credit-card-customers). It contains anonymized profiles of both current and former clients, blending two distinct data categories:
+
+* Demographics: Detailed attributes including age, gender, marital status, income category, and education level.
+
+* Account Behavior: Performance metrics such as credit limits, revolving balances, transaction frequency, and bank-initiated communication logs.
+
+Within this population, customer churn (represented by former bank customers) accounts for approximately 16% of the total data set, providing a robust sample for predictive modeling and behavioral analysis.
+
+The primary goal of this analysis is to transform raw data into a proactive retention strategy through four key methodologies:
+
+* Identify Drivers: Utilizing Logistic Regression to isolate specific "Risk Multipliers"—the behavioral factors that significantly increase the likelihood of account closure.
+
+* Predict Risk: Deploying a Random Forest machine learning model to assign an individualized churn probability score to every existing customer.
+
+* Analyze Lifecycle: Implementing Survival Analysis to map "Customer Life Expectancy," allowing the bank to identify critical tenure milestones where the risk of departure is highest.
+
+* Tactical Action: Generating a prioritized outreach list of at-risk, active customers, enabling the retention team to focus resources where they will have the highest impact.
+
+
+```{r}
+
+attritionDataSubset <- attritionData %>%
+  select(customer.age,
+         months.on.book,
+         total.relationship.count,
+         months.inactive.12.months,
+         contacts.count.12.month,
+         credit.limit,
+         total.revolving.balance,
+         avg.open.to.buy,
+         total.amount.changed.previous.quarter,
+         total.transaction.amount,
+         total.transaction.count,
+         avg.utilization.rate
+         )
+
+summary_data <- attritionDataSubset %>%
+  pivot_longer(cols = everything(), names_to = "metric") %>%
+  group_by(metric) %>%
+  summarize(
+    max = max(value),
+    min = min(value),
+    mean = mean(value),
+    std_dev = sd(value),
+    first_qrt = quantile(value, probs = .25),
+    third_qrt = quantile(value, probs = .75)) %>%
+  mutate(metric = case_when(
+      metric == "customer.age" ~ "Customer Age",
+      metric == "months.on.book" ~ "Months on Book",
+      metric == "total.relationship.count" ~ "Total Relationship Count",
+      metric == "months.inactive.12.months" ~ "Months Inactive Past Year",
+      metric == "contacts.count.12.month" ~ "Bank Communications Past Year",
+      metric == "credit.limit" ~ "Credit Limit",
+      metric == "total.revolving.balance" ~ "Total Revolving Balance",
+      metric == "avg.open.to.buy" ~ "Average Open to Buy",
+      metric == "total.amount.changed.previous.quarter" ~ "Total Amount Changed Previous Quarter",
+      metric == "total.transaction.amount" ~ "Total Transaction Amount",
+      metric == "total.transaction.count" ~ "Total Transaction Count",
+      metric == "avg.utilization.rate" ~ "Average Utilization Rate")) %>%
+  relocate(metric, min, first_qrt, mean, third_qrt, max, std_dev) %>%
+  select(Metric = metric, 
+         Minimum = min,
+         "1st Quartile" = first_qrt,
+         Mean = mean,
+         "3rd Quartile" = third_qrt,
+         Maximum = max,
+         "Std Dev" = std_dev)
+
+kbl(summary_data,caption = "Summary of Quantitative Date from Dataset", digits = 1, align = ("lcccr")) %>%
+kable_styling(bootstrap_options = c("striped", "hover", "condensed", full_width = F), fixed_thead = T) %>%
+scroll_box(width = "100%", height = "480px")
+
+```
+
+### Visualizing Risk: A Comparative View
+
+::: {.callout-note icon = false}
+
+## Understanding the Behavioral Gap
+To determine why customers leave, behavioral signatures—patterns in how individuals use their cards before closing an account are examined. In this analysis, Exploratory Data Analysis (EDA) is utilized to compare the habits of over 10,000 customers. By charting transaction counts against transaction amounts, current at-risk customers can be better identified. 
+
+Statistical analysis shows that churned customers aren't necessarily those with the lowest credit limits; rather, they are the ones who have stopped integrating the card into their daily routine. Identifying this drop in transaction velocity might allow the bank to intervene weeks or months before a customer formally requests to cancel, transforming the strategy from reactive damage control to proactive relationship management.
+
+:::
+
+### Interactive comparison of transaction counts and total spending.
+
+```{r}
+
+#| label: visual-analysis
+#| fig-cap: "Interactive comparison of transaction counts and total spending."
+
+p <- ggplot(attritionData, aes(x = total.transaction.count, y = total.transaction.amount, color = churn)) +
+  geom_point(alpha = 0.3) +
+  scale_color_manual(values = c("Existing Customer" = "#3e3f3a", "Attrited Customer" = "#df691a")) +
+  labs(title = "Transaction Velocity: Usage vs. Attrition Status",
+       x = "Total Transaction Count (Annual)",
+       y = "Total Transaction Amount ($)",
+       color = "Status") +
+  theme_minimal()
+
+ggplotly(p)
+
+```
+
+
+::: {.callout-note icon = false}
+## Segmenting Attrition Across Key Factors
+
+While the Transaction Velocity plot provides a high-level view of account usage, attrition risk is sometimes distributed unevenly across different demographic segments. In this section, a series of comparative plots is created that may allow the reader to observe how attrition rates fluctuate across variables such as age, gender, marital status, income and education. In this case, however, there seem to be no real outliers that could provide realistic insight as to why customer stay or leave.
+
+:::
+
+```{r}
+
+# Visualization by Gender
+plotGender <- ggplot(attritionData, aes(x = gender, fill = churn)) +
+  geom_bar(position = "fill", alpha = 0.8) +
+  scale_fill_manual(values = c("Existing Customer" = "#e5e4e2", "Attrited Customer" = "#df691a")) +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(subtitle  = "Gender",
+       x = "",
+       y = "",
+       fill = "Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position="none")
+
+# Visualization by Age
+plotAge <- ggplot(attritionData, aes(x = age.bracket, fill = churn)) +
+  geom_bar(position = "fill", alpha = 0.8) +
+  scale_fill_manual(values = c("Existing Customer" = "#e5e4e2", "Attrited Customer" = "#df691a")) +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(subtitle  = "Age",
+       x = "",
+       y = "",
+       fill = "Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position="bottom")
+
+# Visualization by Marital Status
+plotMaritalStatus <- ggplot(attritionData, aes(x = marital.status, fill = churn)) +
+  geom_bar(position = "fill", alpha = 0.8) +
+  scale_fill_manual(values = c("Existing Customer" = "#e5e4e2", "Attrited Customer" = "#df691a")) +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(subtitle  = "Marital Status",
+       x = "",
+       y = "",
+       fill = "Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position="none") +
+  theme(legend.position = "none")
+
+# Visualization by Income
+plotIncome <- ggplot(attritionData, aes(x = income.bracket, fill = churn)) +
+  geom_bar(position = "fill", alpha = 0.8) +
+  scale_fill_manual(values = c("Existing Customer" = "#e5e4e2", "Attrited Customer" = "#df691a")) +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(subtitle = "Income",
+       x = "",
+       y = "",
+       fill = "Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position="none")
+
+# Visualization by Edcuation Level
+plotEducation <- ggplot(attritionData, aes(x = education.level, fill = churn)) +
+  geom_bar(position = "fill", alpha = 0.8) +
+  scale_fill_manual(values = c("Existing Customer" = "#e5e4e2", "Attrited Customer" = "#df691a")) +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(subtitle = "Education",
+       x = "",
+       y = "",
+       fill = "Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position="none")
+
+
+(plotGender + plotAge + plotMaritalStatus) / (plotIncome + plotEducation) + plot_annotation(title = 'Customer Attrition Segmentation Across Multiple Factors')
+
+# plotIncome + plotEducation + plot_annotation(title = 'Customer Attrition Segmentation Across Income & Education')
+
+
+```
+
+### Statistical Drivers
+
+::: {.callout-note icon = false}
+
+## Identifying the "Why" with Risk Multipliers
+
+To move beyond simple charts, Logistic regression is utilized to calculate the Risk Multiplier (mathematically, the "exponentiatal coefficient"). This multiplier is calculated by taking the raw statistical weights and transforming them into a scale that represents the "Odds of Churn."
+
+How to Interpret the Numbers:
+
+Multiplier > 1 (Risk Driver): This indicates that as this factor increases, the risk of attrition increases. A multiplier of 1.20 means that for every one-unit increase in that factor, the likelihood of a customer leaving grows by 20%.
+
+Multiplier = 1 (Neutral): This means the factor has no impact on the risk of attrition. It is a neutral variable that does not help us predict whether a customer will stay or leave.
+
+Multiplier < 1 (Protective Factor): This indicates that as this factor increases, the risk of attrition decreases. A multiplier of 0.80 means that for every one-unit increase, the risk of churn is reduced by 20%.
+
+In this updated view, all variables in the model are included to provide a complete picture of every factor recorded by the bank, from age to revolving balance.
+:::
+
+```{r}
+
+#| label: drivers-table
+
+# Fit logistic regression including 'all' significant drivers from the data set
+logit_model <- logistic_reg() %>%
+  set_engine("glm") %>%
+  fit(churn ~ . - client.id - attrition.flag, data = attritionData)
+
+# Formatting the comprehensive drivers table
+all_drivers_table <- tidy(logit_model, exponentiate = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = str_to_title(str_replace_all(term, "\\.", " ")),
+    Impact = case_when(
+      estimate > 1.05 ~ "Higher Risk",
+      estimate < 0.95 ~ "Protective Factor",
+      TRUE ~ "Neutral"
+    )
+  ) %>%
+  select(Factor = term, `Risk Multiplier` = estimate, Impact) %>%
+  arrange(desc(`Risk Multiplier`)) 
+
+tblData <- all_drivers_table %>%
+  filter(Factor != "Avg Open To Buy") %>%
+  mutate(Factor = case_when(
+      Factor == "Age Bracket50-59" ~ "Age Bracket: 50-59",
+      Factor == "Age Bracket40-49" ~ "Age Bracket: 40-49",
+      Factor == "Age Bracket60+" ~ "Age Bracket: 60+",
+      Factor == "Age Bracket30-39" ~ "Age Bracket: 30-39",
+      Factor == "Card Categorygold" ~ "Card Category: Gold",
+      Factor == "Card Categoryplatinum" ~ "Card Category: Platinum",
+      Factor == "Income Bracket>$120k" ~ "Income: > $120k",
+      Factor == "Contacts Count 12 Month" ~ "Previous Year Contacts",
+      Factor == "Months Inactive 12 Months" ~ "Months Inactive Previous 12 Months",
+      Factor == "Income Bracket$80k-$120k" ~ "Income: $80k to $120k",
+      Factor == "Card Categorysilver" ~ "Card Category: Silver",
+      Factor == "Education Leveldoctorate" ~ "Education Level: Doctorate",
+      Factor == "Education Levelpost-Graduate" ~ "Education Level: Post Graduate",
+      Factor == "Dependent Count" ~ "Number of Dependents",
+      Factor == "Income Bracket$60k-$80k" ~ "Income: $60k to $80k",
+      Factor == "Education Levelunknown" ~ "Education Level: Unknown",
+      Factor == "Total Transaction Amount" ~ "Total Transaction Amount",
+      Factor == "Credit Limit" ~ "Credit Limit",
+      Factor == "Total Revolving Balance" ~ "Total Revolving Balance",
+      Factor == "Months On Book" ~ "Months On Book",
+      Factor == "Customer Age" ~ "Customer Age",
+      Factor == "Education Levelhigh School" ~ "Education Level: High School",
+      Factor == "Income Bracketunknown" ~ "Income: Unknown",
+      Factor == "Marital Statusunknown" ~ "Marital Status: Unknown",
+      Factor == "Education Levelcollege" ~ "Education Level: College",
+      Factor == "Education Levelgraduate" ~ "Education Level: Graduate",
+      Factor == "Marital Statusdivorced" ~ "Marital Status: Divorced",
+      Factor == "Total Transaction Count" ~ "Total Transaction Count",
+      Factor == "Avg Utilization Rate" ~ "Average Utilization Rate",
+      Factor == "Income Bracket$40k-$60k" ~ "Income: $40k to $60k",
+      Factor == "Total Amount Changed Previous Quarter" ~ "Total Amount Changed Previous Quarter",
+      Factor == "Total Relationship Count" ~ "Total Relationship Count",
+      Factor == "Marital Statusmarried" ~ "Marital Status: Married",
+      Factor == "Gendermale" ~ "Gender: Male",
+      Factor == "Total Count Change Previous Quarter" ~ "Total Count Change Previous Quarter")
+      )
+
+  kbl(tblData, caption = "Comprehensive Analysis of All Account Drivers", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  column_spec(3, color = "white", 
+              background = case_when(
+                all_drivers_table$Impact == "Higher Risk" ~ "#df691a",
+                all_drivers_table$Impact == "Protective Factor" ~ "#5cb85c",
+                TRUE ~ "#999999")
+              ) %>%
+    scroll_box(width = "100%", height = "500px")
+```
+
+### Predictive Intelligence
+
+::: {.callout-note icon = false}
+## Decoding the Predictive Ranking Scale
+The horizontal axis, labeled "Importance Score", represents the predictive contribution of each factor. In this analysis, a calculation called Gini Impurity is used to determine these scores. Think of impurity as the amount of uncertainty or "clutter" in the data. Every time the model uses a variable like Transaction Count to successfully sort customers into "Stay" or "Leave" buckets, it reduces that clutter.
+
+The scale (ranging from 0 to 250) is a calculated aggregate score, not a direct count of customers. It represents the total amount of clarity gained across all the thousands of decision trees in the model. While a larger database allows for more complex splits—which can result in higher total numbers—the absolute value is less important than the relative distance between the bars. For example, if one factor has a score of 180 and another has 60, the first is three times as powerful at helping predict the future status of an account. The ranking helps ensure that the model is prioritized around the same high-impact behaviors—like usage velocity and revolving balances—that industry experience suggests are the true drivers of risk.
+
+What is a bit perplexing, is that overall age component does not seem to have significant influence as a key indicator of future customer attrition based on the random forest model results below, but certain age factors (ages > 50) rank extremely high on the risk multiplier plot above. More investigative work needs to be performed to better explain the apparent discrepancy.
+
+:::
+
+
+
+```{r}
+#| label: predictive-model
+
+# Build Random Forest model - explicitly excluding target variables to prevent data leakage
+rf_model <- rand_forest() %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification") %>%
+  fit(churn ~ . - client.id - attrition.flag, data = attritionData)
+
+# 1. Importance Plot: Visualizing the predictive 'heavy lifters' using native ggplot
+importance_data <- vi(rf_model) %>%
+  mutate(Variable = str_to_title(str_replace_all(Variable, "\\.", " ")))
+
+ggplotData <- importance_data %>%
+  filter(Variable != "Attrition Flag") %>%    ## Exclude "Attrition Flag" data from plot
+  filter(Variable != "Client Id")             ## Exclude "Client Id" data from plot
+
+importancePlot <- ggplot(ggplotData, aes(x = Importance, y = reorder(Variable, Importance))) +
+  geom_col(fill = "#df691a", alpha = 0.8) +
+  labs(title = "Predictive Ranking: Key Indicators of Customer Attrition",
+       subtitle = "Calculated relative contribution to model accuracy",
+       x = "Importance Score (Weighted Information Gain)",
+       y = "Customer Attribute") +
+  xlim(0, 250) +
+  theme_minimal()
+
+importancePlot
+
+```
+
+### High-Risk Attrition List Customers
+
+::: {.callout-note icon = false}
+## Identifying customers at risk for attrition
+After examining the data, all current customers were ranked from high to low in terms of the calculated probability for them to depart. As one can see, even the highest ranking at-risk customer only has a calculated probability to leave of 10%. The next step would be to drill-down on these at-risk customers to refine the actual probability of departure. More data is needed to improve confidence in the model. As is the case with most machine learning and logistic regression analysis, the quality of the outcome is only as good as the quality of the data.
+
+:::
+
+```{r}
+#| label: high-risk customers
+
+# Generate tactical high-risk list for EXISTING CUSTOMERS ONLY
+high_risk_targets <- predict(rf_model, attritionData, type = "prob") %>%
+  rename_with(~"churn_prob", starts_with(".pred_Attrited")) %>% 
+  bind_cols(attritionData %>% select(client.id, 
+                                     gender, 
+                                     age.bracket, 
+                                     income.bracket, 
+                                     card.category, 
+                                     total.revolving.balance,
+                                     total.transaction.amount,
+                                     contacts.count.12.month, 
+                                     attrition.flag)) %>%
+  filter(attrition.flag == "Existing Customer") %>%
+  arrange(desc(churn_prob)) 
+
+tblData <- high_risk_targets %>%
+  select(ClientID = client.id,
+         Gender = gender,
+         "Age Bracket" = age.bracket, 
+         Income = income.bracket, 
+         'Outstanding Balance' = total.revolving.balance, 
+         `Churn Probability` = churn_prob, 
+         `Card Tier` = card.category, 
+         "Recent Transaction Amount" = total.transaction.amount,
+         `Recent Contacts` = contacts.count.12.month) %>%
+        relocate(ClientID, 
+                 Gender, 
+                 "Age Bracket", 
+                 Income, 
+                 "Card Tier", 
+                 "Outstanding Balance", 
+                 "Recent Transaction Amount",
+                 "Recent Contacts", 
+                 "Churn Probability") %>%
+        slice(1:50)
+
+tblData$"Churn Probability" <- formattable::percent(tblData$"Churn Probability")
+tblData$"Outstanding Balance" <- formattable::currency(tblData$"Outstanding Balance", "$", format = "d")
+tblData$"Recent Transaction Amount" <- formattable::currency(tblData$"Recent Transaction Amount", "$", format = "d")
+
+kbl(tblData,caption = "Tactical Outreach List: Top 50 Highest At-Risk ACTIVE Accounts", digits = 3, align = ("lcclcrccr")) %>%
+kable_styling(bootstrap_options = c("striped", "hover", "condensed", full_width = F), fixed_thead = T) %>%
+scroll_box(width = "100%", height = "500px")
+  
+```
+
+
+### The Attrition Timeline
+
+::: {.callout-note icon = false}
+## Visualizing Customer Life Expectancy
+This final section uses survival analysis to map the customer life cycle. Sudden drops in this curve indicate risk milestones - specific anniversary dates where customers are statistically most likely to reconsider their relationship with the bank. In this case, there appears to be a significant drop-off in customer retention at the three-year point. Perhaps this could be caused by new customers being offered three years of below-market financing, or other inducements. It's certainly a good place to start further investigation. 
+
+:::
+
+```{r}
+
+#| label: survival-timeline
+
+surv_obj <- attritionData %>%
+  mutate(status = ifelse(attrition.flag == "Attrited Customer", 1, 0))
+
+fit_km <- survfit(Surv(months.on.book, status) ~ 1, data = surv_obj)
+
+ggsurvplot(fit_km, 
+           data = surv_obj,
+           palette = "#df691a",
+           title = "Customer Retention Probability by Tenure",
+           xlab = "Months on Book (Customer Lifecycle)",
+           ylab = "Retention Probability",
+           ggtheme = theme_minimal())
+
+```
+
+### Key Findings
+
+Analysis of more than 10,000 customer records confirms that attrition within the consumer credit card division is rarely a sudden event; rather, it is characterized by a gradual "behavioral drift." By leveraging a Random Forest model, the identified primary predictors of churn are not demographic markers—such as age or income—but rather, are caused by other factors including declines in transaction velocity and average utilization. When a customer’s total transaction count drops or they cease maintaining a revolving balance, they may be signaling an intent to depart months before the account is formally closed.
+
+Furthermore, survival analysis identified a critical "tenure risk" at the 36-month milestone. This suggests that as customers reach their third anniversary with the bank, initial product appeals or promotional incentives often lose their efficacy. To mitigate this risk, a structural shift in the Customer Lifecycle Management process may be needed; specifically, the implementation of automated stay-active incentives and product reviews timed for this three-year window.
+
+This project represents only a starting point in demonstrating how machine learning and logistic regression can solve complex challenges within the credit and risk markets. By transforming data into proactive intelligence, institutions can intervene earlier and preserve valuable customer relationships.
+
+### Session Information
+
+```{r}
+#| label: session-info
+#| echo: false
+sessioninfo::session_info()
+```
+---
+
+*Rendered with [Quarto](https://quarto.org/) · Packages: `kableExtra` `patchwork` `plotly` `readxl` `sessioninfo` `survival` `survminer` `tidyverse` `tidymodels` `vip`
+
