@@ -1,57 +1,64 @@
-# machine_learning_customer_churn
+# Machine Learning and Survival Analysis
+> Predicting customer churn using logistic regression, random forest classification, and survival analysis
 
-## Executive Overview
-This repository contains a comprehensive data science project aimed at identifying, analyzing, and predicting customer attrition within a consumer credit card division. Leveraging a dataset of over 10,000 historic records, the project moves beyond basic reporting to provide actionable risk intelligence.
+**Author:** Patrick Lefler
 
-The final output is a high-level Quarto HTML report designed for senior bank executives. It bridges the gap between complex statistical modeling and strategic decision-making by utilizing "Executive Note" callouts to explain the business intuition behind the data.
+**Published:** February 17, 2026
 
-## Key Objectives
-Identify Drivers: Use Logistic Regression to isolate the "Risk Multipliers" that lead to account closure.
+**Rendered:**
 
-Predict Risk: Deploy a Random Forest machine learning model to score existing customers on their probability of churn.
+---
 
-Analyze Lifecycle: Utilize Survival Analysis to map the "Customer Life Expectancy" and identify critical tenure milestones.
+## Predicting Credit Card Customer Attrition
 
-Tactical Action: Generate a prioritized outreach list of at-risk active customers for the retention team.
+A data science framework for identifying, scoring, and acting on customer attrition risk within a consumer credit card division. Using over 10,000 anonymized account records, the analysis moves from behavioral pattern recognition to a ranked tactical outreach list — enabling retention teams to intervene before an account closes, not after.
 
-## Repository Contents
-version7.qmd: The primary Quarto Markdown file containing the full analysis, R code, and executive narrative.
+---
 
-bank_attrition_data.xlsm: The source dataset containing customer demographics, credit limits, and behavioral metrics.
+## Overview
 
-README.md: This project documentation.
+This project applies three complementary statistical methods to the problem of credit card attrition. Logistic regression isolates the behavioral and demographic factors that most strongly predict departure, expressed as interpretable Risk Multipliers. A Random Forest classifier then scores every active account on an individual churn probability, ranked for operational use. Finally, Kaplan-Meier survival analysis maps the customer lifecycle to identify the tenure milestones where attrition risk concentrates — in this case, a pronounced drop-off at the 36-month mark. The combined output shifts the retention function from reactive case management to proactive, data-driven intervention.
 
-## Technical Methodology
-The project utilizes the tidymodels ecosystem in R to ensure a rigorous and reproducible workflow:
+---
 
-Exploratory Data Analysis (EDA): Faceted ggplot2 visualizations and plotly interactive charts to identify behavioral "Danger Zones."
+## Tech Stack
 
-Statistical Inference: Logistic Regression to calculate Odds Ratios for factors like inactivity and transaction velocity.
+- **Language:** R
+- **Framework:** [Quarto](https://quarto.org/)
+- **Primary Libraries:** tidyverse, tidymodels, survival, survminer, ranger, vip, ggplot2, kableExtra, patchwork, plotly, formattable, readxl
+- **Deployment / Output:** Self-contained HTML Document
 
-Machine Learning: A Random Forest classifier (using the ranger engine) with importance scores based on Gini Impurity.
+---
 
-Tenure Analysis: Kaplan-Meier survival curves to visualize the retention probability over the customer lifecycle.
+## Repository Structure
 
-## Strategic Insights
-Behavioral Signatures: The analysis proves that transaction frequency and revolving balance are the primary indicators of health, far outweighing demographic factors like age or income.
+```
+├── data/               # Raw account data (bank_attrition_data.xlsm)
+├── scripts/            # Helper R scripts
+├── models/             # Saved model objects (.rds)
+├── output/             # Rendered HTML file
+├── _brand.yml          # Brand color and typography configuration
+└── project.qmd         # Main Quarto entry point
+```
 
-The 36-Month Milestone: Survival curves indicate a significant "Risk Milestone" at the 3-year mark, suggesting a need for refreshed loyalty incentives at that anniversary.
+---
 
-Proactive Prevention: By filtering the predictive model for existing customers, we provide a "lead list" of individuals who have not yet left but show a 30%+ probability of attrition.
+## Key Findings
 
-Requirements
-To render the report, the following R libraries are required:
+**Behavioral drift, not demographics, drives attrition.** The Random Forest model's top predictors are transaction velocity measures — total transaction count, total transaction amount, and quarter-over-quarter change in transaction volume. Demographic variables including age, gender, and income rank substantially lower in predictive importance. A customer who stops using their card is signaling departure months before they formally close the account.
 
-R
-install.packages(c("tidyverse", "tidymodels", "readxl", "plotly", 
-                   "kableExtra", "vip", "survival", "survminer"))
-## How to Use
-Clone this repository.
+**Age brackets amplify risk in the logistic model.** Customers aged 40–59 carry Risk Multipliers exceeding 13x relative to the baseline cohort — a finding that appears to conflict with the Random Forest's low importance score for age as a continuous variable. The discrepancy likely reflects a nonlinear, threshold effect that the logistic model captures through indicator variables but that the forest absorbs into other correlated features. Further investigation is warranted.
 
-Ensure bank_attrition_data.xlsm is in the root directory.
+**The 36-month tenure mark is a structural risk event.** The Kaplan-Meier survival curve holds relatively flat through the first three years, then drops sharply. This pattern is consistent with promotional or introductory incentives expiring at the three-year anniversary. Automated lifecycle interventions timed to this window represent the clearest near-term retention opportunity.
 
-Open version7.qmd in RStudio or your preferred IDE.
+---
 
-Click Render to generate the version7.html executive report.
+## License
 
-Note: This analysis was developed to simulate a real-world scenario within a financial technology/banking environment, focusing on the transition from data points to executive strategy.
+This project is licensed under the MIT License. See the `LICENSE` file for details.
+
+---
+
+## Contact
+
+Patrick Lefler — [LinkedIn](https://www.linkedin.com/in/patricklefler/) | [Portfolio](https://patrick-lefler.github.io) | [Substack](https://substack.com/@pflefler)
