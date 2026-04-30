@@ -5,7 +5,7 @@
 
 **Published:** February 17, 2026
 
-**Rendered:**
+**Rendered:** https://patrick-lefler.github.io/rQuarto_machine_learning_survival_analysis_2026-02-17/
 
 ---
 
